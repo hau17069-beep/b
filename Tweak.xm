@@ -1,6 +1,7 @@
 // Tweak.xm - Network Recon
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <Security/Security.h>
 
 // ==========================================
 // HOOK NSURLSession - Bắt request/response
@@ -12,30 +13,29 @@
     NSString *method = request.HTTPMethod;
     NSData *body = request.HTTPBody;
     
-    // Log URL và method
     NSLog(@"[NET-RECON] ═══════════════════════════");
     NSLog(@"[NET-RECON] %@ %@", method, url);
     
-    // Log headers (quan trọng - chứa device fingerprint)
+    // Log headers nghi vấn
     NSDictionary *headers = request.allHTTPHeaderFields;
     for (NSString *key in headers) {
         NSString *value = headers[key];
-        // Chỉ log các header nghi vấn
-        if ([key.lowercaseString containsString:@"device"] ||
-            [key.lowercaseString containsString:@"x-"] ||
-            [key.lowercaseString containsString:@"cookie"] ||
-            [key.lowercaseString containsString:@"user-agent"] ||
-            [key.lowercaseString containsString:@"sign"] ||
-            [key.lowercaseString containsString:@"token"]) {
+        NSString *kl = key.lowercaseString;
+        if ([kl containsString:@"device"] ||
+            [kl containsString:@"x-"] ||
+            [kl containsString:@"cookie"] ||
+            [kl containsString:@"user-agent"] ||
+            [kl containsString:@"sign"] ||
+            [kl containsString:@"token"] ||
+            [kl containsString:@"security"]) {
             NSLog(@"[NET-RECON] HEADER %@: %@", key, value);
         }
     }
     
-    // Log body nếu là JSON
+    // Log body nếu là JSON và có từ khóa nghi vấn
     if (body) {
         NSString *bodyStr = [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding];
         if (bodyStr) {
-            // Chỉ log nếu body chứa từ khóa nghi vấn
             NSString *lower = bodyStr.lowercaseString;
             if ([lower containsString:@"jailbreak"] ||
                 [lower containsString:@"root"]      ||
@@ -44,7 +44,6 @@
                 [lower containsString:@"risk"]      ||
                 [lower containsString:@"check"]     ||
                 [lower containsString:@"sign"]      ||
-                [lower containsString:@"token"]     ||
                 [lower containsString:@"uuid"]      ||
                 [lower containsString:@"idfa"]) {
                 NSLog(@"[NET-RECON] BODY: %@", bodyStr);
@@ -52,7 +51,7 @@
         }
     }
     
-    // Gọi completion handler gốc nhưng bọc lại để log response
+    // Bọc completion handler để log response
     void (^wrappedHandler)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
         
         NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
@@ -93,15 +92,6 @@
 %end
 
 // ==========================================
-// HOOK CFNetwork - Bắt ở tầng thấp hơn
-// ==========================================
-extern void *CFReadStreamCreateForHTTPRequest(void *, void *);
-%hookf(void *, CFReadStreamCreateForHTTPRequest, void *alloc, void *request) {
-    NSLog(@"[NET-RECON] CFReadStream called");
-    return %orig;
-}
-
-// ==========================================
 // HOOK NSUserDefaults - Bắt xem app lưu gì
 // ==========================================
 %hook NSUserDefaults
@@ -124,7 +114,6 @@ extern void *CFReadStreamCreateForHTTPRequest(void *, void *);
 // ==========================================
 // HOOK KEYCHAIN - Bắt xem app lưu gì vào keychain
 // ==========================================
-extern OSStatus SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result);
 %hookf(OSStatus, SecItemAdd, CFDictionaryRef attributes, CFTypeRef *result) {
     NSDictionary *dict = (__bridge NSDictionary *)attributes;
     NSLog(@"[NET-RECON] SecItemAdd: %@", dict);
