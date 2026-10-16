@@ -1,4 +1,4 @@
-// Tweak.xm - Full Bypass v10 (Fix NSLogViewer)
+// Tweak.xm - Full Bypass v11 (Whitelist NSLogViewer + ellekit caller)
 #import <Foundation/Foundation.h>
 #import <sys/sysctl.h>
 #import <dlfcn.h>
@@ -15,30 +15,50 @@ extern "C" int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int
 extern "C" int proc_listpids(uint32_t type, uint32_t typeinfo, void *buffer, int buffersize);
 
 // ==========================================
-// DYLD NAME - CHỈ ẨN TÊN FILE CỤ THỂ, KHÔNG ẨN PATH CHUNG
+// CALLER CHECK - dùng dladdr (KHÔNG hook dladdr nên không đệ quy)
+// ==========================================
+static bool isCallerWhitelisted() {
+    void *caller = __builtin_return_address(0);
+    if (!caller) return false;
+    Dl_info info;
+    if (dladdr(caller, &info) && info.dli_fname) {
+        const char *f = info.dli_fname;
+        // NSLogViewer và mọi thứ nó dùng
+        if (strstr(f, "NSLogViewer"))   return true;
+        if (strstr(f, "libellekit"))    return true;
+        if (strstr(f, "libinjector"))   return true;
+        // Tweak của chúng ta
+        if (strstr(f, "LCProtectionRecon")) return true;
+        if (strstr(f, "LCProtectionBypass")) return true;
+        // RootHide infra
+        if (strstr(f, "roothide"))      return true;
+        if (strstr(f, "libroot"))       return true;
+        if (strstr(f, "systemhook"))    return true;
+        if (strstr(f, "AutoPatches"))   return true;
+    }
+    return false;
+}
+
+// ==========================================
+// DYLD NAME - chỉ ẩn tên file cụ thể
 // ==========================================
 static bool isJbImageName(const char *name) {
     if (!name) return false;
     
-    // ============ WHITELIST - LUÔN HIỂN THỊ ============
-    // NSLogViewer - để nó tự tìm thấy chính nó
-    if (strstr(name, "NSLogViewer")) return false;
-    // Tweak của chúng ta - để Choicy có thể inject
+    // Whitelist - LUÔN hiển thị
+    if (strstr(name, "NSLogViewer"))       return false;
+    if (strstr(name, "libellekit"))        return false;
+    if (strstr(name, "libinjector"))       return false;
     if (strstr(name, "LCProtectionRecon")) return false;
     if (strstr(name, "LCProtectionBypass")) return false;
-    // ELLEKIT + INJECTOR: nếu ẩn sẽ làm NSLogViewer không hook được UI
-    if (strstr(name, "libellekit")) return false;
-    if (strstr(name, "libinjector")) return false;
-    if (strstr(name, "systemhook")) return false;
+    if (strstr(name, "systemhook"))        return false;
     
-    // ============ BLACKLIST - ẨN CỤ THỂ TỪNG FILE ============
-    // RootHide infra
+    // Blacklist - chỉ tên file cụ thể
     if (strstr(name, "roothideinit.dylib"))  return true;
     if (strstr(name, "roothidepatch.dylib")) return true;
     if (strstr(name, "libroothide.dylib"))   return true;
     if (strstr(name, "libroot.dylib"))       return true;
     if (strstr(name, "AutoPatches.dylib"))   return true;
-    // Tweaks cụ thể (không phải NSLogViewer)
     if (strstr(name, "Choicy.dylib"))        return true;
     if (strstr(name, "AutoPickFoody.dylib")) return true;
     
@@ -81,17 +101,18 @@ static const int g_fakePathCount = sizeof(g_fakePaths) / sizeof(g_fakePaths[0]);
 }
 
 // ==========================================
-// HOOK 2: TASK_INFO (TASK_DYLD_INFO)
+// HOOK 2: TASK_INFO - cho phép whitelisted caller
 // ==========================================
 %hookf(kern_return_t, task_info, task_name_t target_task, task_flavor_t flavor, task_info_t task_info_out, mach_msg_type_number_t *task_info_outCnt) {
     if (flavor == 17) { // TASK_DYLD_INFO
+        if (isCallerWhitelisted()) return %orig;
         return KERN_FAILURE;
     }
     return %orig;
 }
 
 // ==========================================
-// HOOK 3: DLSYM - bỏ "hook" và "MSHook" để không phá NSLogViewer
+// HOOK 3: DLSYM
 // ==========================================
 static bool isSuspiciousSymbol(const char *sym) {
     if (!sym) return false;
@@ -106,6 +127,7 @@ static bool isSuspiciousSymbol(const char *sym) {
 }
 
 %hookf(void *, dlsym, void *handle, const char *symbol) {
+    if (isCallerWhitelisted()) return %orig;
     if (isSuspiciousSymbol(symbol)) return NULL;
     return %orig;
 }
@@ -114,6 +136,7 @@ static bool isSuspiciousSymbol(const char *sym) {
 // HOOK 4: SYSCALL
 // ==========================================
 %hookf(int, sysctl, int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    if (isCallerWhitelisted()) return %orig;
     if (namelen >= 2 && name[0] == CTL_KERN && name[1] == KERN_PROC) {
         if (oldlenp) *oldlenp = 0;
         return 0;
@@ -122,6 +145,7 @@ static bool isSuspiciousSymbol(const char *sym) {
 }
 
 %hookf(int, sysctlbyname, const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    if (isCallerWhitelisted()) return %orig;
     if (name) {
         if (strstr(name, "kern.proc") || strstr(name, "kern.argmax")) {
             if (oldlenp) *oldlenp = 0;
@@ -132,16 +156,18 @@ static bool isSuspiciousSymbol(const char *sym) {
 }
 
 // ==========================================
-// HOOK 5: CSOPS
+// HOOK 5: CSOPS - cho phép whitelisted caller
 // ==========================================
 %hookf(int, csops, pid_t pid, unsigned int ops, void *useraddr, size_t usersize) {
+    if (isCallerWhitelisted()) return %orig;
     return -1;
 }
 
 // ==========================================
-// HOOK 6: PROC ENUMERATION
+// HOOK 6: PROC ENUMERATION - cho phép whitelisted caller
 // ==========================================
 %hookf(int, proc_pidinfo, int pid, int flavor, uint64_t arg, void *buffer, int buffersize) {
+    if (isCallerWhitelisted()) return %orig;
     if (flavor == 1 || flavor == 13 || flavor == 17) {
         return 0;
     }
@@ -149,5 +175,6 @@ static bool isSuspiciousSymbol(const char *sym) {
 }
 
 %hookf(int, proc_listpids, uint32_t type, uint32_t typeinfo, void *buffer, int buffersize) {
+    if (isCallerWhitelisted()) return %orig;
     return 0;
 }
