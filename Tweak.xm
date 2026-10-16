@@ -1,11 +1,10 @@
-// Tweak.xm - Full Bypass v5 (Minimal, chống crash)
+// Tweak.xm - Full Bypass v6
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
 #import <unistd.h>
 #import <dlfcn.h>
-#import <dirent.h>
 #import <mach-o/dyld.h>
 #import <string.h>
 
@@ -13,77 +12,59 @@
 // EXTERN
 // ==========================================
 extern "C" int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
-extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
 
 // ==========================================
-// THREAD-LOCAL GUARD (tránh đệ quy)
+// THREAD-LOCAL GUARDS
 // ==========================================
+static __thread int g_in_getcwd = 0;
 static __thread int g_check_depth = 0;
 
 // ==========================================
-// PATH CHECK - chỉ chặn pattern cụ thể, KHÔNG chặn .jbroot đơn thuần
+// PATH CHECK
 // ==========================================
 static bool isSuspiciousPath(const char *path) {
     if (!path) return false;
-    if (g_check_depth > 0) return false;
-    g_check_depth++;
     
+    // Nếu đang trong getcwd hoặc đệ quy nội bộ -> cho phép
+    if (g_in_getcwd > 0) return false;
+    if (g_check_depth > 0) return false;
+    
+    g_check_depth++;
     bool result = false;
     
-    // Pattern cụ thể của RootHide/tweak (KHÔNG dùng ".jbroot" một mình)
-    if (strstr(path, "TweakInject/"))            result = true;
-    else if (strstr(path, "DynamicPatches/"))    result = true;
-    else if (strstr(path, "roothideinit.dylib")) result = true;
-    else if (strstr(path, "roothidepatch.dylib")) result = true;
-    else if (strstr(path, "libroothide.dylib"))  result = true;
-    else if (strstr(path, "libinjector.dylib"))  result = true;
-    else if (strstr(path, "libellekit.dylib"))   result = true;
-    else if (strstr(path, "libroot.dylib"))      result = true;
-    else if (strstr(path, "Choicy.dylib"))       result = true;
-    else if (strstr(path, "NSLogViewer.dylib"))  result = true;
-    else if (strstr(path, "LCProtectionRecon.dylib")) result = true;
-    else if (strstr(path, "AutoPatches.dylib"))  result = true;
-    else if (strstr(path, "AutoPickFoody.dylib")) result = true;
-    else if (strstr(path, "Shadow.dylib"))       result = true;
-    else if (strstr(path, "systemhook"))         result = true;
-    // JB apps
-    else if (strstr(path, "Cydia.app"))          result = true;
-    else if (strstr(path, "Sileo.app"))          result = true;
-    else if (strstr(path, "Filza.app"))          result = true;
-    else if (strstr(path, "RST.app"))            result = true;
-    else if (strstr(path, "NZT.app"))            result = true;
-    else if (strstr(path, "TouchSprite"))        result = true;
-    else if (strstr(path, "Flybird"))            result = true;
-    else if (strstr(path, "hdFaker"))            result = true;
-    // Debug
-    else if (strstr(path, "/Developer/usr/bin/debugserver")) result = true;
-    else if (strstr(path, "/Developer/usr/lib/libXCTestBundleInject")) result = true;
-    else if (strstr(path, "/Developer/usr/bin/DTDeviceArbitration")) result = true;
-    // HeiBao
-    else if (strstr(path, "zzzzHeiBaoLib"))      result = true;
-    else if (strstr(path, "HeiBaoService"))      result = true;
-    else if (strstr(path, "heibao.service.plist")) result = true;
-    // Jailbreak paths
-    else if (strcmp(path, "/var/jb") == 0)       result = true;
-    else if (strcmp(path, "/private/preboot/jb") == 0) result = true;
-    else if (strstr(path, "/var/containers/Bundle/xina")) result = true;
-    // Classic
-    else if (strstr(path, "/bin/su"))            result = true;
-    else if (strstr(path, "/usr/sbin/sshd"))     result = true;
-    else if (strstr(path, "/usr/bin/ssh"))       result = true;
-    else if (strstr(path, "/etc/apt"))           result = true;
-    else if (strstr(path, "libhooker"))          result = true;
-    else if (strstr(path, "/Library/MobileSubstrate")) result = true;
+    // Chỉ check tên file cụ thể (KHÔNG check "TweakInject/" vì đó là CWD)
+    const char *badNames[] = {
+        "roothideinit.dylib", "roothidepatch.dylib", "libroothide.dylib",
+        "libinjector.dylib", "libellekit.dylib", "libroot.dylib",
+        "Choicy.dylib", "NSLogViewer.dylib", "LCProtectionRecon.dylib",
+        "AutoPatches.dylib", "AutoPickFoody.dylib", "Shadow.dylib",
+        "systemhook",
+        "Cydia.app", "Sileo.app", "Filza.app", "RST.app", "NZT.app",
+        "TouchSprite", "Flybird", "hdFaker",
+        "/Developer/usr/bin/debugserver",
+        "/Developer/usr/lib/libXCTestBundleInject",
+        "/Developer/usr/bin/DTDeviceArbitration",
+        "zzzzHeiBaoLib", "HeiBaoService", "heibao.service.plist",
+        "/bin/su", "/usr/sbin/sshd", "/usr/bin/ssh", "/etc/apt",
+        "libhooker", "/Library/MobileSubstrate"
+    };
+    for (size_t i = 0; i < sizeof(badNames)/sizeof(badNames[0]); i++) {
+        if (strstr(path, badNames[i])) { result = true; break; }
+    }
+    
+    if (!result) {
+        if (strcmp(path, "/var/jb") == 0) result = true;
+        else if (strcmp(path, "/private/preboot/jb") == 0) result = true;
+        else if (strstr(path, "/var/containers/Bundle/xina")) result = true;
+    }
     
     g_check_depth--;
     return result;
 }
 
-// ==========================================
-// SYMBOL CHECK
-// ==========================================
 static bool isSuspiciousSymbol(const char *sym) {
     if (!sym) return false;
+    if (g_in_getcwd > 0) return false;
     const char *bad[] = {
         "jbroot", "MSHook", "substrate", "ellekit", "libhooker",
         "roothide", "fishhook", "Frida", "Cydia", "TweakInject",
@@ -96,7 +77,7 @@ static bool isSuspiciousSymbol(const char *sym) {
 }
 
 // ==========================================
-// DYLD IMAGE NAME MAPPER
+// DYLD NAME MAPPING
 // ==========================================
 static bool isJbImageName(const char *name) {
     if (!name) return false;
@@ -139,7 +120,17 @@ static const char *g_fakePaths[] = {
 static const int g_fakePathCount = sizeof(g_fakePaths) / sizeof(g_fakePaths[0]);
 
 // ==========================================
-// SECTION 1: DYLD (quan trọng nhất)
+// SECTION 0: HOOK GETCWD TRƯỚC TIÊN (fix đệ quy)
+// ==========================================
+%hookf(char *, getcwd, char *buf, size_t size) {
+    g_in_getcwd++;
+    char *r = %orig;
+    g_in_getcwd--;
+    return r;
+}
+
+// ==========================================
+// SECTION 1: DYLD
 // ==========================================
 %hookf(const char *, _dyld_get_image_name, uint32_t image_index) {
     const char *real = %orig;
@@ -150,7 +141,7 @@ static const int g_fakePathCount = sizeof(g_fakePaths) / sizeof(g_fakePaths[0]);
 }
 
 // ==========================================
-// SECTION 2: FILE SYSTEM (chỉ 4 hàm an toàn)
+// SECTION 2: FILE SYSTEM (minimal)
 // ==========================================
 %hookf(int, stat, const char *path, struct stat *buf) {
     if (isSuspiciousPath(path)) return -1;
@@ -193,7 +184,7 @@ static const int g_fakePathCount = sizeof(g_fakePaths) / sizeof(g_fakePaths[0]);
 }
 
 // ==========================================
-// SECTION 5: OBJC (chỉ NSFileManager)
+// SECTION 5: OBJC (NSFileManager)
 // ==========================================
 %hook NSFileManager
 - (BOOL)fileExistsAtPath:(NSString *)path {
