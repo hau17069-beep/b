@@ -1,6 +1,8 @@
 // Tweak.xm - Full Bypass v7 (Minimal)
 #import <Foundation/Foundation.h>
 #import <sys/sysctl.h>
+#import <dlfcn.h>
+#import <mach-o/dyld.h>
 #import <string.h>
 
 // ==========================================
