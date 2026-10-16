@@ -7,10 +7,9 @@
 #import <UIKit/UIKit.h>
 
 // ==========================================
-// KHAI BÁO THỦ CÔNG HÀM PTRACE
-// (Vì iOS SDK không cung cấp header sys/ptrace.h)
+// KHAI BÁO THỦ CÔNG HÀM PTRACE (Bọc extern "C")
 // ==========================================
-extern int ptrace(int request, pid_t pid, caddr_t addr, int data);
+extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
 
 // ==========================================
 // 1. HOOK CÁC HÀM C CẤP THẤP (File System)
@@ -18,7 +17,6 @@ extern int ptrace(int request, pid_t pid, caddr_t addr, int data);
 
 %hookf(int, stat, const char *path, struct stat *buf) {
     if (path) {
-        // Chỉ log những file/thư mục nghi vấn để đỡ rối log
         if (strstr(path, "jbroot") || strstr(path, "Cydia") || strstr(path, "substrate") || 
             strstr(path, "roothide") || strstr(path, "ellekit") || strstr(path, "bin/bash") || 
             strstr(path, "ssh") || strstr(path, "apt") || strstr(path, "dpkg") || 
