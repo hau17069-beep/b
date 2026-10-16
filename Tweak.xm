@@ -3,12 +3,12 @@
 #import <sys/stat.h>
 #import <unistd.h>
 #import <dlfcn.h>
+#import <dirent.h>
 #import <UIKit/UIKit.h>
 #import <string.h>
 
 // ==========================================
-// KIỂM TRA CALLER CÓ PHẢI LÀ ROOTHIDE INFRA KHÔNG
-// Nếu đúng -> cho phép, tránh crash RootHide
+// KIỂM TRA CALLER: NẾU LÀ ROOTHIDE INFRA -> CHO PHÉP
 // ==========================================
 static bool isCallerRootHide() {
     void *caller = __builtin_return_address(0);
@@ -23,7 +23,7 @@ static bool isCallerRootHide() {
             strstr(fname, "libroot")      ||
             strstr(fname, "systemhook")   ||
             strstr(fname, "AutoPatches")  ||
-            strstr(fname, "TweakInject") ||
+            strstr(fname, "TweakInject")  ||
             strstr(fname, "LCProtectionRecon")) {
             return true;
         }
@@ -32,7 +32,7 @@ static bool isCallerRootHide() {
 }
 
 // ==========================================
-// HÀM KIỂM TRA ĐƯỜNG DẪN ĐÁNG NGỜ
+// KIỂM TRA ĐƯỜNG DẪN ĐÁNG NGỜ
 // ==========================================
 static bool isSuspicious(const char *path) {
     if (!path) return false;
@@ -40,57 +40,32 @@ static bool isSuspicious(const char *path) {
     // Nếu caller là RootHide infra -> cho phép hết
     if (isCallerRootHide()) return false;
     
-    // ----- Nhóm 1: Đường dẫn chứa các thư mục tweak -----
-    if (strstr(path, "TweakInject") ||
-        strstr(path, "DynamicPatches")) {
-        return true;
-    }
+    // ----- CHẶN BẤT KỲ ĐƯỜNG DẪN NÀO CHỨA .jbroot -----
+    // (Đây là fix chính cho vấn đề bị phát hiện)
+    if (strstr(path, ".jbroot")) return true;
+    if (strstr(path, "TweakInject")) return true;
+    if (strstr(path, "DynamicPatches")) return true;
+    if (strstr(path, "roothide")) return true;
     
-    // ----- Nhóm 2: File .dylib cụ thể trong .jbroot -----
-    if (strstr(path, ".jbroot")) {
-        const char *specific[] = {
-            "roothideinit.dylib",
-            "roothidepatch.dylib",
-            "libroothide.dylib",
-            "libinjector.dylib",
-            "libellekit.dylib",
-            "libroot.dylib",
-            "Choicy.dylib",
-            "NSLogViewer.dylib",
-            "LCProtectionRecon.dylib",
-            "Shadow.dylib",
-            "Shadow.plist",
-            "AutoPickFoody.dylib",
-            "gpsmasterplugin.plist"
-        };
-        for (size_t i = 0; i < sizeof(specific)/sizeof(specific[0]); i++) {
-            if (strstr(path, specific[i])) return true;
-        }
-    }
-    
-    // ----- Nhóm 3: Dấu vết jailbreak cổ điển -----
+    // ----- Dấu vết jailbreak cổ điển -----
     const char *classic[] = {
-        "Cydia.app",
-        "MobileSubstrate",
-        "CydiaSubstrate",
-        "/etc/apt",
-        "/usr/sbin/sshd",
-        "/usr/bin/ssh",
-        "/var/lib/dpkg",
-        "/var/cache/apt",
-        "sshd_config",
-        "ssh-keysign",
-        "zzzzHeiBaoLib"
+        "Cydia.app", "MobileSubstrate", "CydiaSubstrate",
+        "/etc/apt", "/usr/sbin/sshd", "/usr/bin/ssh",
+        "/var/lib/dpkg", "/var/cache/apt", "/var/lib/apt",
+        "/private/var/lib/apt", "sshd_config", "ssh-keysign",
+        "libellekit", "libhooker", "Choicy", "NSLogViewer",
+        "Shadow.plist", "gpsmasterplugin", "AutoPickFoody",
+        "LCProtectionRecon", "zzzzHeiBaoLib",
+        "/bin/bash", "/usr/bin/ssh", "/usr/sbin/sshd"
     };
     for (size_t i = 0; i < sizeof(classic)/sizeof(classic[0]); i++) {
         if (strstr(path, classic[i])) return true;
     }
-    
     return false;
 }
 
 // ==========================================
-// HOOK CÁC HÀM FILE SYSTEM
+// HOOK CÁC HÀM FILE SYSTEM (mở rộng)
 // ==========================================
 %hookf(int, stat, const char *path, struct stat *buf) {
     if (isSuspicious(path)) return -1;
@@ -112,8 +87,18 @@ static bool isSuspicious(const char *path) {
     return %orig;
 }
 
+%hookf(DIR *, opendir, const char *path) {
+    if (isSuspicious(path)) return NULL;
+    return %orig;
+}
+
+%hookf(ssize_t, readlink, const char *path, char *buf, size_t bufsize) {
+    if (isSuspicious(path)) return -1;
+    return %orig;
+}
+
 // ==========================================
-// HOOK OBJECTIVE-C
+// HOOK OBJECTIVE-C (mở rộng)
 // ==========================================
 %hook NSFileManager
 - (BOOL)fileExistsAtPath:(NSString *)path {
@@ -125,6 +110,44 @@ static bool isSuspicious(const char *path) {
         if (isDirectory) *isDirectory = NO;
         return NO;
     }
+    return %orig;
+}
+- (NSArray *)contentsOfDirectoryAtPath:(NSString *)path error:(NSError **)error {
+    if (path && isSuspicious([path UTF8String])) {
+        if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain code:4 userInfo:nil];
+        return nil;
+    }
+    return %orig;
+}
+- (NSDictionary *)attributesOfItemAtPath:(NSString *)path error:(NSError **)error {
+    if (path && isSuspicious([path UTF8String])) {
+        if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain code:4 userInfo:nil];
+        return nil;
+    }
+    return %orig;
+}
+%end
+
+%hook NSData
++ (id)dataWithContentsOfFile:(NSString *)path {
+    if (path && isSuspicious([path UTF8String])) return nil;
+    return %orig;
+}
++ (id)dataWithContentsOfFile:(NSString *)path options:(NSUInteger)mask error:(NSError **)errorPtr {
+    if (path && isSuspicious([path UTF8String])) {
+        if (errorPtr) *errorPtr = [NSError errorWithDomain:NSCocoaErrorDomain code:4 userInfo:nil];
+        return nil;
+    }
+    return %orig;
+}
+%end
+
+%hook NSString
+- (BOOL)writeToFile:(NSString *)path atomically:(BOOL)useAuxiliaryFile {
+    if (path && isSuspicious([path UTF8String])) return NO;
+    return %orig;
+}
+- (NSData *)dataUsingEncoding:(NSStringEncoding)enc {
     return %orig;
 }
 %end
