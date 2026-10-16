@@ -1,216 +1,132 @@
-// Tweak.xm
+// Tweak.xm - Network Recon
 #import <Foundation/Foundation.h>
-#import <sys/stat.h>
-#import <sys/sysctl.h>
-#import <unistd.h>
-#import <dlfcn.h>
-#import <dirent.h>
-#import <errno.h>
-#import <mach-o/dyld.h>
 #import <UIKit/UIKit.h>
-#import <string.h>
 
 // ==========================================
-// KIỂM TRA CALLER: ROOTHIDE INFRA -> CHO PHÉP
+// HOOK NSURLSession - Bắt request/response
 // ==========================================
-static bool isCallerRootHide() {
-    void *caller = __builtin_return_address(0);
-    if (!caller) return false;
-    Dl_info info;
-    if (dladdr(caller, &info) && info.dli_fname) {
-        const char *f = info.dli_fname;
-        if (strstr(f, "roothide")    || strstr(f, "libinjector") ||
-            strstr(f, "ellekit")     || strstr(f, "libroot")     ||
-            strstr(f, "systemhook")  || strstr(f, "AutoPatches") ||
-            strstr(f, "TweakInject") || strstr(f, "LCProtectionRecon")) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// ==========================================
-// KIỂM TRA ĐƯỜNG DẪN ĐÁNG NGỜ
-// ==========================================
-static bool isSuspiciousPath(const char *path) {
-    if (!path) return false;
-    if (isCallerRootHide()) return false;
+%hook NSURLSession
+- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
     
-    if (strstr(path, ".jbroot")) return true;
-    if (strstr(path, "TweakInject")) return true;
-    if (strstr(path, "DynamicPatches")) return true;
-    if (strstr(path, "roothide")) return true;
+    NSString *url = request.URL.absoluteString;
+    NSString *method = request.HTTPMethod;
+    NSData *body = request.HTTPBody;
     
-    const char *classic[] = {
-        "Cydia.app", "MobileSubstrate", "CydiaSubstrate",
-        "/etc/apt", "/usr/sbin/sshd", "/usr/bin/ssh",
-        "/var/lib/dpkg", "/var/cache/apt", "/var/lib/apt",
-        "/private/var/lib/apt", "sshd_config", "ssh-keysign",
-        "libellekit", "libhooker", "Choicy", "NSLogViewer",
-        "Shadow.plist", "gpsmasterplugin", "AutoPickFoody",
-        "LCProtectionRecon", "zzzzHeiBaoLib", "/bin/bash"
+    // Log URL và method
+    NSLog(@"[NET-RECON] ═══════════════════════════");
+    NSLog(@"[NET-RECON] %@ %@", method, url);
+    
+    // Log headers (quan trọng - chứa device fingerprint)
+    NSDictionary *headers = request.allHTTPHeaderFields;
+    for (NSString *key in headers) {
+        NSString *value = headers[key];
+        // Chỉ log các header nghi vấn
+        if ([key.lowercaseString containsString:@"device"] ||
+            [key.lowercaseString containsString:@"x-"] ||
+            [key.lowercaseString containsString:@"cookie"] ||
+            [key.lowercaseString containsString:@"user-agent"] ||
+            [key.lowercaseString containsString:@"sign"] ||
+            [key.lowercaseString containsString:@"token"]) {
+            NSLog(@"[NET-RECON] HEADER %@: %@", key, value);
+        }
+    }
+    
+    // Log body nếu là JSON
+    if (body) {
+        NSString *bodyStr = [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding];
+        if (bodyStr) {
+            // Chỉ log nếu body chứa từ khóa nghi vấn
+            NSString *lower = bodyStr.lowercaseString;
+            if ([lower containsString:@"jailbreak"] ||
+                [lower containsString:@"root"]      ||
+                [lower containsString:@"device"]    ||
+                [lower containsString:@"security"]  ||
+                [lower containsString:@"risk"]      ||
+                [lower containsString:@"check"]     ||
+                [lower containsString:@"sign"]      ||
+                [lower containsString:@"token"]     ||
+                [lower containsString:@"uuid"]      ||
+                [lower containsString:@"idfa"]) {
+                NSLog(@"[NET-RECON] BODY: %@", bodyStr);
+            }
+        }
+    }
+    
+    // Gọi completion handler gốc nhưng bọc lại để log response
+    void (^wrappedHandler)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
+        
+        NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
+        NSLog(@"[NET-RECON] RESPONSE %ld %@", (long)httpResp.statusCode, url);
+        
+        if (data) {
+            NSString *respStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            if (respStr) {
+                NSString *lower = respStr.lowercaseString;
+                if ([lower containsString:@"jailbreak"] ||
+                    [lower containsString:@"jb"]          ||
+                    [lower containsString:@"root"]        ||
+                    [lower containsString:@"block"]       ||
+                    [lower containsString:@"ban"]         ||
+                    [lower containsString:@"risk"]        ||
+                    [lower containsString:@"security"]    ||
+                    [lower containsString:@"forbidden"]) {
+                    NSLog(@"[NET-RECON] ⚠️ RESPONSE BODY: %@", respStr);
+                }
+            }
+        }
+        
+        if (completionHandler) completionHandler(data, response, error);
     };
-    for (size_t i = 0; i < sizeof(classic)/sizeof(classic[0]); i++) {
-        if (strstr(path, classic[i])) return true;
-    }
-    return false;
-}
-
-static bool isSuspiciousSymbol(const char *sym) {
-    if (!sym) return false;
-    if (isCallerRootHide()) return false;
-    const char *bad[] = {
-        "MSHook", "substrate", "ellekit", "libhooker",
-        "roothide", "fishhook", "Frida", "Cydia"
-    };
-    for (size_t i = 0; i < sizeof(bad)/sizeof(bad[0]); i++) {
-        if (strstr(sym, bad[i])) return true;
-    }
-    return false;
-}
-
-// ==========================================
-// HOOK FILE SYSTEM (C)
-// ==========================================
-%hookf(int, stat, const char *path, struct stat *buf) {
-    if (isSuspiciousPath(path)) return -1;
-    return %orig;
-}
-%hookf(int, lstat, const char *path, struct stat *buf) {
-    if (isSuspiciousPath(path)) return -1;
-    return %orig;
-}
-%hookf(int, access, const char *path, int mode) {
-    if (isSuspiciousPath(path)) return -1;
-    return %orig;
-}
-%hookf(FILE *, fopen, const char *path, const char *mode) {
-    if (isSuspiciousPath(path)) return NULL;
-    return %orig;
-}
-%hookf(DIR *, opendir, const char *path) {
-    if (isSuspiciousPath(path)) return NULL;
-    return %orig;
-}
-%hookf(ssize_t, readlink, const char *path, char *buf, size_t bufsize) {
-    if (isSuspiciousPath(path)) return -1;
-    return %orig;
-}
-
-// ==========================================
-// HOOK NSFileManager & NSData
-// ==========================================
-%hook NSFileManager
-- (BOOL)fileExistsAtPath:(NSString *)path {
-    if (path && isSuspiciousPath([path UTF8String])) return NO;
-    return %orig;
-}
-- (BOOL)fileExistsAtPath:(NSString *)path isDirectory:(BOOL *)isDirectory {
-    if (path && isSuspiciousPath([path UTF8String])) {
-        if (isDirectory) *isDirectory = NO;
-        return NO;
-    }
-    return %orig;
-}
-- (NSArray *)contentsOfDirectoryAtPath:(NSString *)path error:(NSError **)error {
-    if (path && isSuspiciousPath([path UTF8String])) {
-        if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain code:4 userInfo:nil];
-        return nil;
-    }
-    return %orig;
-}
-- (NSDictionary *)attributesOfItemAtPath:(NSString *)path error:(NSError **)error {
-    if (path && isSuspiciousPath([path UTF8String])) {
-        if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain code:4 userInfo:nil];
-        return nil;
-    }
-    return %orig;
+    
+    return %orig(request, wrappedHandler);
 }
 %end
 
-%hook NSData
-+ (id)dataWithContentsOfFile:(NSString *)path {
-    if (path && isSuspiciousPath([path UTF8String])) return nil;
-    return %orig;
-}
-+ (id)dataWithContentsOfFile:(NSString *)path options:(NSUInteger)mask error:(NSError **)errorPtr {
-    if (path && isSuspiciousPath([path UTF8String])) {
-        if (errorPtr) *errorPtr = [NSError errorWithDomain:NSCocoaErrorDomain code:4 userInfo:nil];
-        return nil;
-    }
+// ==========================================
+// HOOK NSURLConnection (cho các app cũ)
+// ==========================================
+%hook NSURLConnection
++ (NSData *)sendSynchronousRequest:(NSURLRequest *)request returningResponse:(NSURLResponse **)response error:(NSError **)error {
+    NSLog(@"[NET-RECON] SYNC %@ %@", request.HTTPMethod, request.URL.absoluteString);
     return %orig;
 }
 %end
 
 // ==========================================
-// HOOK SYSCALL (chỉ chặn khi caller KHÔNG phải RootHide)
+// HOOK CFNetwork - Bắt ở tầng thấp hơn
 // ==========================================
-%hookf(int, sysctl, int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
-    if (namelen >= 2 && name[0] == CTL_KERN && name[1] == KERN_PROC) {
-        if (!isCallerRootHide()) {
-            // Giả vờ không có tiến trình nào
-            if (oldlenp) *oldlenp = 0;
-            return 0;
-        }
-    }
+extern void *CFReadStreamCreateForHTTPRequest(void *, void *);
+%hookf(void *, CFReadStreamCreateForHTTPRequest, void *alloc, void *request) {
+    NSLog(@"[NET-RECON] CFReadStream called");
     return %orig;
 }
 
 // ==========================================
-// HOOK DLSYM (lọc symbol cụ thể)
+// HOOK NSUserDefaults - Bắt xem app lưu gì
 // ==========================================
-%hookf(void *, dlsym, void *handle, const char *symbol) {
-    if (isSuspiciousSymbol(symbol)) return NULL;
-    return %orig;
-}
-
-// ==========================================
-// HOOK GETENV (ẩn DYLD_INSERT_LIBRARIES)
-// ==========================================
-%hookf(char *, getenv, const char *name) {
-    if (name && !isCallerRootHide()) {
-        if (strstr(name, "DYLD_INSERT") ||
-            strstr(name, "DYLD_LIBRARY") ||
-            strstr(name, "DYLD_FRAMEWORK")) {
-            return NULL;
+%hook NSUserDefaults
+- (void)setObject:(id)value forKey:(NSString *)defaultName {
+    if (defaultName) {
+        NSString *lower = defaultName.lowercaseString;
+        if ([lower containsString:@"jailbreak"] ||
+            [lower containsString:@"device"]    ||
+            [lower containsString:@"uuid"]      ||
+            [lower containsString:@"idfa"]      ||
+            [lower containsString:@"token"]     ||
+            [lower containsString:@"fingerprint"]) {
+            NSLog(@"[NET-RECON] NSUserDefaults set %@ = %@", defaultName, value);
         }
     }
-    return %orig;
-}
-
-// ==========================================
-// HOOK DYLD IMAGE ENUMERATION
-// ==========================================
-%hookf(const char *, _dyld_get_image_name, uint32_t image_index) {
-    const char *name = %orig;
-    if (name && !isCallerRootHide()) {
-        if (strstr(name, ".jbroot") ||
-            strstr(name, "TweakInject") ||
-            strstr(name, "roothide") ||
-            strstr(name, "ellekit") ||
-            strstr(name, "libhooker") ||
-            strstr(name, "Choicy") ||
-            strstr(name, "NSLogViewer")) {
-            return "/usr/lib/libSystem.B.dylib"; // Trả về path hệ thống sạch
-        }
-    }
-    return name;
-}
-
-// ==========================================
-// HOOK URL SCHEME
-// ==========================================
-%hook UIApplication
-- (BOOL)canOpenURL:(NSURL *)url {
-    if (url) {
-        NSString *s = url.scheme.lowercaseString;
-        if ([s isEqualToString:@"cydia"] ||
-            [s isEqualToString:@"sileo"] ||
-            [s isEqualToString:@"zbra"]  ||
-            [s isEqualToString:@"filza"]) {
-            return NO;
-        }
-    }
-    return %orig;
+    %orig;
 }
 %end
+
+// ==========================================
+// HOOK KEYCHAIN - Bắt xem app lưu gì vào keychain
+// ==========================================
+extern OSStatus SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result);
+%hookf(OSStatus, SecItemAdd, CFDictionaryRef attributes, CFTypeRef *result) {
+    NSDictionary *dict = (__bridge NSDictionary *)attributes;
+    NSLog(@"[NET-RECON] SecItemAdd: %@", dict);
+    return %orig;
+}
