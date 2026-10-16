@@ -5,56 +5,29 @@
 #import <dlfcn.h>
 #import <UIKit/UIKit.h>
 #import <string.h>
-#import <execinfo.h>
-
-// ==========================================
-// KIỂM TRA CALLER CÓ PHẢI LÀ ROOTHIDE INFRASTRUCTURE KHÔNG
-// ==========================================
-static bool isCallerRootHide() {
-    void *caller = __builtin_return_address(1);
-    if (!caller) return false;
-    
-    Dl_info info;
-    if (dladdr(caller, &info) && info.dli_fname) {
-        const char *fname = info.dli_fname;
-        // Nếu caller là RootHide infra, KHÔNG chặn
-        if (strstr(fname, "libroothide") ||
-            strstr(fname, "libinjector") ||
-            strstr(fname, "roothideinit") ||
-            strstr(fname, "roothidepatch") ||
-            strstr(fname, "libroot.dylib") ||
-            strstr(fname, "ellekit") ||
-            strstr(fname, "AutoPatches") ||
-            strstr(fname, "systemhook")) {
-            return true;
-        }
-    }
-    return false;
-}
 
 // ==========================================
 // HÀM KIỂM TRA ĐƯỜNG DẪN ĐÁNG NGỜ
+// Chỉ chặn TÊN FILE CỤ THỂ, không chặn cả thư mục
 // ==========================================
 static bool isSuspicious(const char *path) {
     if (!path) return false;
     
-    // Nếu caller là RootHide, luôn cho phép
-    if (isCallerRootHide()) return false;
-    
-    // Chỉ chặn các dấu vết đặc trưng của tweak và Cydia
-    // KHÔNG chặn toàn bộ .jbroot vì RootHide cần dùng
     const char *blacklist[] = {
-        "TweakInject/",         // Nơi chứa tweak
-        "TweakInject",
-        "Choicy",
+        // Các tweak cụ thể mà LCProtection đang tìm
         "NSLogViewer",
+        "Choicy.dylib",
         "Shadow.plist",
         "gpsmasterplugin.plist",
         "AutoPickFoody",
         "LCProtectionRecon",
         "zzzzHeiBaoLib",
+        
+        // Các dấu vết jailbreak cổ điển
         "Cydia.app",
-        "MobileSubstrate"
+        "MobileSubstrate",
+        "CydiaSubstrate",
+        "libhooker"
     };
     
     for (int i = 0; i < sizeof(blacklist) / sizeof(blacklist[0]); i++) {
