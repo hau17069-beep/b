@@ -7,65 +7,122 @@
 #import <string.h>
 
 // ==========================================
-// HÀM KIỂM TRA ĐƯỜNG DẪN ĐÁNG NGỜ
-// Chỉ chặn TÊN FILE CỤ THỂ, không chặn cả thư mục
+// KIỂM TRA CALLER CÓ PHẢI LÀ ROOTHIDE INFRA KHÔNG
+// Nếu đúng -> cho phép, tránh crash RootHide
 // ==========================================
-static bool isSuspicious(const char *path) {
-    if (!path) return false;
+static bool isCallerRootHide() {
+    void *caller = __builtin_return_address(0);
+    if (!caller) return false;
     
-    const char *blacklist[] = {
-        // Các tweak cụ thể mà LCProtection đang tìm
-        "NSLogViewer",
-        "Choicy.dylib",
-        "Shadow.plist",
-        "gpsmasterplugin.plist",
-        "AutoPickFoody",
-        "LCProtectionRecon",
-        "zzzzHeiBaoLib",
-        
-        // Các dấu vết jailbreak cổ điển
-        "Cydia.app",
-        "MobileSubstrate",
-        "CydiaSubstrate",
-        "libhooker"
-    };
-    
-    for (int i = 0; i < sizeof(blacklist) / sizeof(blacklist[0]); i++) {
-        if (strstr(path, blacklist[i])) return true;
+    Dl_info info;
+    if (dladdr(caller, &info) && info.dli_fname) {
+        const char *fname = info.dli_fname;
+        if (strstr(fname, "roothide")     ||
+            strstr(fname, "libinjector")  ||
+            strstr(fname, "ellekit")      ||
+            strstr(fname, "libroot")      ||
+            strstr(fname, "systemhook")   ||
+            strstr(fname, "AutoPatches")  ||
+            strstr(fname, "TweakInject") ||
+            strstr(fname, "LCProtectionRecon")) {
+            return true;
+        }
     }
     return false;
 }
 
 // ==========================================
-// 1. HOOK STAT
+// HÀM KIỂM TRA ĐƯỜNG DẪN ĐÁNG NGỜ
+// ==========================================
+static bool isSuspicious(const char *path) {
+    if (!path) return false;
+    
+    // Nếu caller là RootHide infra -> cho phép hết
+    if (isCallerRootHide()) return false;
+    
+    // ----- Nhóm 1: Đường dẫn chứa các thư mục tweak -----
+    if (strstr(path, "TweakInject") ||
+        strstr(path, "DynamicPatches")) {
+        return true;
+    }
+    
+    // ----- Nhóm 2: File .dylib cụ thể trong .jbroot -----
+    if (strstr(path, ".jbroot")) {
+        const char *specific[] = {
+            "roothideinit.dylib",
+            "roothidepatch.dylib",
+            "libroothide.dylib",
+            "libinjector.dylib",
+            "libellekit.dylib",
+            "libroot.dylib",
+            "Choicy.dylib",
+            "NSLogViewer.dylib",
+            "LCProtectionRecon.dylib",
+            "Shadow.dylib",
+            "Shadow.plist",
+            "AutoPickFoody.dylib",
+            "gpsmasterplugin.plist"
+        };
+        for (size_t i = 0; i < sizeof(specific)/sizeof(specific[0]); i++) {
+            if (strstr(path, specific[i])) return true;
+        }
+    }
+    
+    // ----- Nhóm 3: Dấu vết jailbreak cổ điển -----
+    const char *classic[] = {
+        "Cydia.app",
+        "MobileSubstrate",
+        "CydiaSubstrate",
+        "/etc/apt",
+        "/usr/sbin/sshd",
+        "/usr/bin/ssh",
+        "/var/lib/dpkg",
+        "/var/cache/apt",
+        "sshd_config",
+        "ssh-keysign",
+        "zzzzHeiBaoLib"
+    };
+    for (size_t i = 0; i < sizeof(classic)/sizeof(classic[0]); i++) {
+        if (strstr(path, classic[i])) return true;
+    }
+    
+    return false;
+}
+
+// ==========================================
+// HOOK CÁC HÀM FILE SYSTEM
 // ==========================================
 %hookf(int, stat, const char *path, struct stat *buf) {
     if (isSuspicious(path)) return -1;
     return %orig;
 }
 
-// ==========================================
-// 2. HOOK ACCESS
-// ==========================================
+%hookf(int, lstat, const char *path, struct stat *buf) {
+    if (isSuspicious(path)) return -1;
+    return %orig;
+}
+
 %hookf(int, access, const char *path, int mode) {
     if (isSuspicious(path)) return -1;
     return %orig;
 }
 
-// ==========================================
-// 3. HOOK FOPEN
-// ==========================================
 %hookf(FILE *, fopen, const char *path, const char *mode) {
     if (isSuspicious(path)) return NULL;
     return %orig;
 }
 
 // ==========================================
-// 4. HOOK OBJECTIVE-C
+// HOOK OBJECTIVE-C
 // ==========================================
 %hook NSFileManager
 - (BOOL)fileExistsAtPath:(NSString *)path {
+    if (path && isSuspicious([path UTF8String])) return NO;
+    return %orig;
+}
+- (BOOL)fileExistsAtPath:(NSString *)path isDirectory:(BOOL *)isDirectory {
     if (path && isSuspicious([path UTF8String])) {
+        if (isDirectory) *isDirectory = NO;
         return NO;
     }
     return %orig;
