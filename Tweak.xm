@@ -5,100 +5,89 @@
 #import <unistd.h>
 #import <dlfcn.h>
 #import <UIKit/UIKit.h>
+#import <string.h>
 
 // ==========================================
-// KHAI BÁO THỦ CÔNG HÀM PTRACE (Bọc extern "C")
+// HÀM KIỂM TRA ĐƯỜNG DẪN ĐÁNG NGỜ
 // ==========================================
-extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
+static bool isSuspicious(const char *path) {
+    if (!path) return false;
+    
+    const char *blacklist[] = {
+        "Cydia", "jbroot", "roothide", "MobileSubstrate", "substrate",
+        "TweakInject", "libellekit", "libroot", "zzzzHeiBaoLib",
+        "sshd", "ssh", "apt", "/bin/bash", "Choicy", "NSLogViewer",
+        "LCProtectionRecon", "Shadow.plist", "gpsmasterplugin.plist",
+        "AutoPatches.dylib", "LCProtection", "libhooker", "ellekit"
+    };
+    
+    for (int i = 0; i < sizeof(blacklist) / sizeof(blacklist[0]); i++) {
+        if (strstr(path, blacklist[i])) return true;
+    }
+    return false;
+}
+
+static bool isSuspiciousSymbol(const char *symbol) {
+    if (!symbol) return false;
+    
+    const char *blacklist[] = {
+        "MSHook", "substrate", "ellekit", "roothide", "fishhook",
+        "Frida", "libhooker", "Cydia"
+    };
+    
+    for (int i = 0; i < sizeof(blacklist) / sizeof(blacklist[0]); i++) {
+        if (strstr(symbol, blacklist[i])) return true;
+    }
+    return false;
+}
 
 // ==========================================
 // 1. HOOK CÁC HÀM C CẤP THẤP (File System)
 // ==========================================
 
 %hookf(int, stat, const char *path, struct stat *buf) {
-    if (path) {
-        if (strstr(path, "jbroot") || strstr(path, "Cydia") || strstr(path, "substrate") || 
-            strstr(path, "roothide") || strstr(path, "ellekit") || strstr(path, "bin/bash") || 
-            strstr(path, "ssh") || strstr(path, "apt") || strstr(path, "dpkg") || 
-            strstr(path, "frida") || strstr(path, "MobileSubstrate")) {
-            NSLog(@"[LC-RECON] stat -> %s", path);
-        }
-    }
+    if (isSuspicious(path)) return -1; // Giả vờ file không tồn tại
     return %orig;
 }
 
 %hookf(int, access, const char *path, int mode) {
-    if (path) {
-        if (strstr(path, "jbroot") || strstr(path, "Cydia") || strstr(path, "substrate") || 
-            strstr(path, "roothide") || strstr(path, "ellekit") || strstr(path, "bin/bash")) {
-            NSLog(@"[LC-RECON] access -> %s", path);
-        }
-    }
+    if (isSuspicious(path)) return -1;
     return %orig;
 }
 
 %hookf(FILE *, fopen, const char *path, const char *mode) {
-    if (path) {
-        if (strstr(path, "jbroot") || strstr(path, "Cydia") || strstr(path, "substrate") || 
-            strstr(path, "roothide") || strstr(path, "ellekit") || strstr(path, "bin/bash")) {
-            NSLog(@"[LC-RECON] fopen -> %s", path);
-        }
-    }
+    if (isSuspicious(path)) return NULL; // Giả vờ mở file thất bại
     return %orig;
 }
 
 // ==========================================
-// 2. HOOK SYSCALL (Check debugger, tiến trình)
+// 2. HOOK SYSCALL (Chặn quét tiến trình)
 // ==========================================
 
 %hookf(int, sysctl, int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
-    int ret = %orig;
     if (namelen >= 2 && name[0] == CTL_KERN && name[1] == KERN_PROC) {
-        NSLog(@"[LC-RECON] sysctl KERN_PROC called (Checking processes)");
+        return -1; // Giả vờ lỗi
     }
-    return ret;
-}
-
-%hookf(int, ptrace, int request, pid_t pid, caddr_t addr, int data) {
-    NSLog(@"[LC-RECON] ptrace called (request=%d) (Checking debugger)", request);
     return %orig;
 }
 
 // ==========================================
-// 3. HOOK DLSYM (Tìm symbol của tweak/substrate)
+// 3. HOOK DLSYM (Ẩn symbol tweak)
 // ==========================================
 
 %hookf(void *, dlsym, void *handle, const char *symbol) {
-    if (symbol) {
-        if (strstr(symbol, "MSHook") || strstr(symbol, "substrate") || strstr(symbol, "ellekit") || 
-            strstr(symbol, "roothide") || strstr(symbol, "fishhook") || strstr(symbol, "Frida")) {
-            NSLog(@"[LC-RECON] dlsym -> %s", symbol);
-        }
-    }
+    if (isSuspiciousSymbol(symbol)) return NULL;
     return %orig;
 }
 
 // ==========================================
-// 4. HOOK OBJECTIVE-C (NSFileManager, UIApplication)
+// 4. HOOK OBJECTIVE-C (NSFileManager)
 // ==========================================
 
 %hook NSFileManager
 - (BOOL)fileExistsAtPath:(NSString *)path {
-    if (path) {
-        if ([path containsString:@"jbroot"] || [path containsString:@"Cydia"] || 
-            [path containsString:@"substrate"] || [path containsString:@"roothide"] || 
-            [path containsString:@"ellekit"]) {
-            NSLog(@"[LC-RECON] NSFileManager fileExistsAtPath -> %@", path);
-        }
-    }
-    return %orig;
-}
-%end
-
-%hook UIApplication
-- (BOOL)canOpenURL:(NSURL *)url {
-    if (url) {
-        NSLog(@"[LC-RECON] canOpenURL -> %@", url.absoluteString);
+    if (path && isSuspicious([path UTF8String])) {
+        return NO;
     }
     return %orig;
 }
