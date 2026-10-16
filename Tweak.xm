@@ -1,4 +1,4 @@
-// Tweak.xm - Full Bypass v9
+// Tweak.xm - Full Bypass v10 (Fix NSLogViewer)
 #import <Foundation/Foundation.h>
 #import <sys/sysctl.h>
 #import <dlfcn.h>
@@ -9,41 +9,40 @@
 // ==========================================
 // EXTERN
 // ==========================================
-extern "C" kern_return_t task_info(task_name_t target_task, task_flavor_t flavor, task_info_t task_info_out, mach_msg_type_number_t *task_info_outCnt);
+extern "C" kern_return_t task_info(task_name_t target_task, task_flavor_t task_flavor, task_info_t task_info_out, mach_msg_type_number_t *task_info_outCnt);
 extern "C" int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
 extern "C" int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
 extern "C" int proc_listpids(uint32_t type, uint32_t typeinfo, void *buffer, int buffersize);
 
 // ==========================================
-// WHITELIST: những tweak PHẢI hiển thị để hoạt động
-// ==========================================
-static bool isWhitelistedImage(const char *name) {
-    if (!name) return false;
-    // Cho phép NSLogViewer tự thấy chính nó để init
-    if (strstr(name, "NSLogViewer")) return true;
-    // Cho phép chính tweak này (LCProtectionBypass / LCProtectionRecon)
-    if (strstr(name, "LCProtectionRecon")) return true;
-    if (strstr(name, "LCProtectionBypass")) return true;
-    return false;
-}
-
-// ==========================================
-// DYLD NAME CHECK
+// DYLD NAME - CHỈ ẨN TÊN FILE CỤ THỂ, KHÔNG ẨN PATH CHUNG
 // ==========================================
 static bool isJbImageName(const char *name) {
     if (!name) return false;
-    // Whitelist ưu tiên cao nhất
-    if (isWhitelistedImage(name)) return false;
     
-    return strstr(name, ".jbroot")           != NULL ||
-           strstr(name, "roothide")          != NULL ||
-           strstr(name, "ellekit")           != NULL ||
-           strstr(name, "Choicy")            != NULL ||
-           strstr(name, "AutoPickFoody")     != NULL ||
-           strstr(name, "AutoPatches")       != NULL ||
-           strstr(name, "libroot.dylib")     != NULL ||
-           strstr(name, "systemhook")        != NULL ||
-           strstr(name, "libinjector")       != NULL;
+    // ============ WHITELIST - LUÔN HIỂN THỊ ============
+    // NSLogViewer - để nó tự tìm thấy chính nó
+    if (strstr(name, "NSLogViewer")) return false;
+    // Tweak của chúng ta - để Choicy có thể inject
+    if (strstr(name, "LCProtectionRecon")) return false;
+    if (strstr(name, "LCProtectionBypass")) return false;
+    // ELLEKIT + INJECTOR: nếu ẩn sẽ làm NSLogViewer không hook được UI
+    if (strstr(name, "libellekit")) return false;
+    if (strstr(name, "libinjector")) return false;
+    if (strstr(name, "systemhook")) return false;
+    
+    // ============ BLACKLIST - ẨN CỤ THỂ TỪNG FILE ============
+    // RootHide infra
+    if (strstr(name, "roothideinit.dylib"))  return true;
+    if (strstr(name, "roothidepatch.dylib")) return true;
+    if (strstr(name, "libroothide.dylib"))   return true;
+    if (strstr(name, "libroot.dylib"))       return true;
+    if (strstr(name, "AutoPatches.dylib"))   return true;
+    // Tweaks cụ thể (không phải NSLogViewer)
+    if (strstr(name, "Choicy.dylib"))        return true;
+    if (strstr(name, "AutoPickFoody.dylib")) return true;
+    
+    return false;
 }
 
 static const char *g_fakePaths[] = {
@@ -92,11 +91,10 @@ static const int g_fakePathCount = sizeof(g_fakePaths) / sizeof(g_fakePaths[0]);
 }
 
 // ==========================================
-// HOOK 3: DLSYM (chỉ chặn symbol cụ thể, KHÔNG chặn "hook"/"MSHook")
+// HOOK 3: DLSYM - bỏ "hook" và "MSHook" để không phá NSLogViewer
 // ==========================================
 static bool isSuspiciousSymbol(const char *sym) {
     if (!sym) return false;
-    // Bỏ "MSHook" và "hook" để không phá tweak khác (NSLogViewer, ellekit)
     const char *bad[] = {
         "jbroot", "substrate", "libhooker",
         "roothide", "fishhook", "Frida", "Cydia"
@@ -144,7 +142,6 @@ static bool isSuspiciousSymbol(const char *sym) {
 // HOOK 6: PROC ENUMERATION
 // ==========================================
 %hookf(int, proc_pidinfo, int pid, int flavor, uint64_t arg, void *buffer, int buffersize) {
-    // flavor 1 = PROC_PIDLISTFDS, 13 = PROC_PIDT_SHORTBSDINFO, 17 = various
     if (flavor == 1 || flavor == 13 || flavor == 17) {
         return 0;
     }
