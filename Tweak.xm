@@ -1,42 +1,37 @@
 // Tweak.xm
 #import <Foundation/Foundation.h>
 #import <sys/stat.h>
-#import <sys/sysctl.h>
 #import <unistd.h>
 #import <dlfcn.h>
 #import <UIKit/UIKit.h>
 #import <string.h>
 
 // ==========================================
-// HÀM KIỂM TRA ĐƯỜNG DẪN ĐÁNG NGỜ
+// HÀM KIỂM TRA ĐƯỜNG DẪN ĐÁNG NGỜ (CHỈ TẬP TRUNG VÀO ROOTHIDE)
 // ==========================================
 static bool isSuspicious(const char *path) {
     if (!path) return false;
     
+    // Chỉ chặn các dấu vết đặc trưng của RootHide và tweak
+    // KHÔNG chặn các đường dẫn hệ thống chung chung như /bin/bash, /usr/sbin/sshd
     const char *blacklist[] = {
-        "Cydia", "jbroot", "roothide", "MobileSubstrate", "substrate",
-        "TweakInject", "libellekit", "libroot", "zzzzHeiBaoLib",
-        "sshd", "ssh", "apt", "/bin/bash", "Choicy", "NSLogViewer",
-        "LCProtectionRecon", "Shadow.plist", "gpsmasterplugin.plist",
-        "AutoPatches.dylib", "LCProtection", "libhooker", "ellekit"
+        ".jbroot",          // Dấu vết đặc trưng nhất của RootHide
+        "roothide",
+        "TweakInject",      // Nơi chứa các tweak
+        "Choicy",
+        "NSLogViewer",
+        "Shadow.plist",
+        "gpsmasterplugin.plist",
+        "AutoPickFoody",
+        "libellekit",
+        "libhooker",
+        "LCProtectionRecon",
+        "zzzzHeiBaoLib",
+        "AutoPatches.dylib"
     };
     
     for (int i = 0; i < sizeof(blacklist) / sizeof(blacklist[0]); i++) {
         if (strstr(path, blacklist[i])) return true;
-    }
-    return false;
-}
-
-static bool isSuspiciousSymbol(const char *symbol) {
-    if (!symbol) return false;
-    
-    const char *blacklist[] = {
-        "MSHook", "substrate", "ellekit", "roothide", "fishhook",
-        "Frida", "libhooker", "Cydia"
-    };
-    
-    for (int i = 0; i < sizeof(blacklist) / sizeof(blacklist[0]); i++) {
-        if (strstr(symbol, blacklist[i])) return true;
     }
     return false;
 }
@@ -61,27 +56,7 @@ static bool isSuspiciousSymbol(const char *symbol) {
 }
 
 // ==========================================
-// 2. HOOK SYSCALL (Chặn quét tiến trình)
-// ==========================================
-
-%hookf(int, sysctl, int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
-    if (namelen >= 2 && name[0] == CTL_KERN && name[1] == KERN_PROC) {
-        return -1; // Giả vờ lỗi
-    }
-    return %orig;
-}
-
-// ==========================================
-// 3. HOOK DLSYM (Ẩn symbol tweak)
-// ==========================================
-
-%hookf(void *, dlsym, void *handle, const char *symbol) {
-    if (isSuspiciousSymbol(symbol)) return NULL;
-    return %orig;
-}
-
-// ==========================================
-// 4. HOOK OBJECTIVE-C (NSFileManager)
+// 2. HOOK OBJECTIVE-C (NSFileManager)
 // ==========================================
 
 %hook NSFileManager
