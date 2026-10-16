@@ -77,15 +77,7 @@ static void LOGRECON(const char *category, const char *msg) {
     return %orig;
 }
 
-%hookf(int, open, const char *path, int oflag, ...) {
-    if (path) NSLog(@"[FULL-RECON][FS] open: %s", path);
-    return %orig;
-}
-
-%hookf(int, openat, int fd, const char *path, int oflag, ...) {
-    if (path) NSLog(@"[FULL-RECON][FS] openat: %s", path);
-    return %orig;
-}
+// ĐÃ XÓA hook(open) và hook(openat) vì chúng là variadic function
 
 %hookf(DIR *, opendir, const char *path) {
     if (path) NSLog(@"[FULL-RECON][FS] opendir: %s", path);
@@ -101,7 +93,6 @@ static void LOGRECON(const char *category, const char *msg) {
     if (path) NSLog(@"[FULL-RECON][FS] realpath: %s", path);
     return %orig;
 }
-
 // ==========================================
 // SECTION 2: SYSCALL & PROCESS
 // ==========================================
