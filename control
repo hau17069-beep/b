@@ -1,8 +1,8 @@
-Package: com.yourname.lcprotectionrecon
-Name: LCProtection Recon
+Package: com.yourname.lcprotectionbypass
+Name: LCProtection Bypass
 Version: 1.0.0
 Architecture: iphoneos-arm64
-Description: Tweak do thám LCProtection của Foody
+Description: Bypass LCProtection cho Foody
 Maintainer: YourName
 Author: YourName
 Section: Tweaks
