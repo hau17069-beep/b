@@ -1,0 +1,39 @@
+name: Build Tweak
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Install Dependencies
+      run: |
+        brew install ldid fakeroot make git
+        brew install --cask gcc-arm-embedded || true
+
+    - name: Setup Theos
+      run: |
+        export THEOS=$HOME/theos
+        git clone --recursive https://github.com/theos/theos.git $THEOS
+        echo "THEOS=$THEOS" >> $GITHUB_ENV
+
+    - name: Build Tweak
+      run: |
+        make package
+      env:
+        THEOS: ${{ env.THEOS }}
+
+    - name: Upload Deb Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: LCProtectionRecon-deb
+        path: packages/*.deb
