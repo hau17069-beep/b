@@ -14,14 +14,16 @@
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
 #import <mach/mach.h>
+#import <mach/mach_vm.h>
 #import <mach/vm_region.h>
 #import <mach/vm_map.h>
+#import <spawn.h>
 #import <string.h>
 #import <stdlib.h>
 #import <stdio.h>
 
 // ==========================================
-// EXTERN DECLARATIONS (không có header chính thức)
+// EXTERN DECLARATIONS
 // ==========================================
 extern "C" int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
 extern "C" int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
@@ -30,13 +32,6 @@ extern "C" char ***_NSGetEnviron(void);
 extern "C" char *getenv(const char *name);
 extern "C" int sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
-
-// ==========================================
-// LOGGER HELPERS
-// ==========================================
-static void LOGRECON(const char *category, const char *msg) {
-    NSLog(@"[FULL-RECON][%s] %s", category, msg);
-}
 
 // ==========================================
 // SECTION 1: FILE SYSTEM (C APIs)
@@ -77,8 +72,6 @@ static void LOGRECON(const char *category, const char *msg) {
     return %orig;
 }
 
-// ĐÃ XÓA hook(open) và hook(openat) vì chúng là variadic function
-
 %hookf(DIR *, opendir, const char *path) {
     if (path) NSLog(@"[FULL-RECON][FS] opendir: %s", path);
     return %orig;
@@ -93,6 +86,7 @@ static void LOGRECON(const char *category, const char *msg) {
     if (path) NSLog(@"[FULL-RECON][FS] realpath: %s", path);
     return %orig;
 }
+
 // ==========================================
 // SECTION 2: SYSCALL & PROCESS
 // ==========================================
@@ -136,7 +130,7 @@ static void LOGRECON(const char *category, const char *msg) {
     return %orig;
 }
 
-%hookf(int, posix_spawn, pid_t *pid, const char *path, const void *file_actions, const void *attrp, char *const argv[], char *const envp[]) {
+%hookf(int, posix_spawn, pid_t *pid, const char *path, const posix_spawn_file_actions_t *file_actions, const posix_spawnattr_t *attrp, char *const argv[], char *const envp[]) {
     if (path) NSLog(@"[FULL-RECON][PROC] posix_spawn: %s", path);
     return %orig;
 }
@@ -178,7 +172,7 @@ static void LOGRECON(const char *category, const char *msg) {
         if (strstr(name, ".jbroot") || strstr(name, "TweakInject") ||
             strstr(name, "roothide") || strstr(name, "ellekit") ||
             strstr(name, "Choicy") || strstr(name, "NSLogViewer") ||
-            strstr(name, "shadow") || strstr(name, "Shadow")) {
+            strstr(name, "Shadow") || strstr(name, "shadow")) {
             NSLog(@"[FULL-RECON][DYLD] ⚠️ image[%u] = %s", image_index, name);
         }
     }
@@ -193,9 +187,7 @@ static void LOGRECON(const char *category, const char *msg) {
     return %orig;
 }
 
-%hookf(const struct mach_header *, _dyld_get_image_header_containing_address, const void *address) {
-    return %orig;
-}
+// ĐÃ XÓA _dyld_get_image_header_containing_address vì không hỗ trợ iOS
 
 // ==========================================
 // SECTION 4: OBJECTIVE-C RUNTIME
@@ -343,7 +335,7 @@ static void LOGRECON(const char *category, const char *msg) {
 %end
 
 // ==========================================
-// SECTION 11: NSURLSession (bắt request body đầy đủ hơn)
+// SECTION 11: NSURLSession
 // ==========================================
 
 %hook NSURLSession
