@@ -2,6 +2,8 @@
 #import <Foundation/Foundation.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
+#import <sys/ptrace.h> // BẮT BUỘC: Thêm để fix lỗi 'ptrace'
+#import <unistd.h>     // BẮT BUỘC: Thêm để fix lỗi 'access'
 #import <dlfcn.h>
 #import <UIKit/UIKit.h>
 
@@ -22,15 +24,7 @@
     return %orig;
 }
 
-%hookf(int, statfs, const char *path, struct statfs *buf) {
-    if (path) {
-        if (strstr(path, "jbroot") || strstr(path, "Cydia") || strstr(path, "substrate") || 
-            strstr(path, "roothide") || strstr(path, "ellekit")) {
-            NSLog(@"[LC-RECON] statfs -> %s", path);
-        }
-    }
-    return %orig;
-}
+// ĐÃ XÓA HOOK statfs Ở ĐÂY ĐỂ TRÁNH LỖI BUILD
 
 %hookf(int, access, const char *path, int mode) {
     if (path) {
