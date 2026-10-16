@@ -14,7 +14,6 @@
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
 #import <mach/mach.h>
-#import <mach/mach_vm.h>
 #import <mach/vm_region.h>
 #import <mach/vm_map.h>
 #import <spawn.h>
@@ -32,6 +31,26 @@ extern "C" char ***_NSGetEnviron(void);
 extern "C" char *getenv(const char *name);
 extern "C" int sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
+
+// Khai báo thủ công 2 hàm mach_vm (mach_vm.h bị iOS SDK vô hiệu hóa)
+extern "C" kern_return_t mach_vm_region(
+    vm_map_t target_task,
+    mach_vm_address_t *address,
+    mach_vm_size_t *size,
+    vm_region_flavor_t flavor,
+    vm_region_info_t info,
+    mach_msg_type_number_t *infoCnt,
+    mach_port_t *object_name
+);
+
+extern "C" kern_return_t mach_vm_region_recurse(
+    vm_map_t target_task,
+    mach_vm_address_t *address,
+    mach_vm_size_t *size,
+    natural_t *nesting_depth,
+    vm_region_recurse_info_t info,
+    mach_msg_type_number_t *infoCnt
+);
 
 // ==========================================
 // SECTION 1: FILE SYSTEM (C APIs)
@@ -173,7 +192,7 @@ extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
             strstr(name, "roothide") || strstr(name, "ellekit") ||
             strstr(name, "Choicy") || strstr(name, "NSLogViewer") ||
             strstr(name, "Shadow") || strstr(name, "shadow")) {
-            NSLog(@"[FULL-RECON][DYLD] ⚠️ image[%u] = %s", image_index, name);
+            NSLog(@"[FULL-RECON][DYLD] image[%u] = %s", image_index, name);
         }
     }
     return name;
@@ -186,8 +205,6 @@ extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
 %hookf(intptr_t, _dyld_get_image_vmaddr_slide, uint32_t image_index) {
     return %orig;
 }
-
-// ĐÃ XÓA _dyld_get_image_header_containing_address vì không hỗ trợ iOS
 
 // ==========================================
 // SECTION 4: OBJECTIVE-C RUNTIME
