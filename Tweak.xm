@@ -307,20 +307,10 @@ static const char *fakeNameForIndex(uint32_t idx) {
 }
 
 // ==========================================
-// SECTION 7: MACH_VM_REGION (fix memory scan)
+// SECTION 7: MACH_VM_REGION
+// (Không cần logic phức tạp - pass-through)
 // ==========================================
 %hookf(kern_return_t, mach_vm_region, vm_map_t target_task, mach_vm_address_t *address, mach_vm_size_t *size, vm_region_flavor_t flavor, vm_region_info_t info, mach_msg_type_number_t *infoCnt, mach_port_t *object_name) {
-    if (!isCallerRootHide() && flavor == VM_REGION_BASIC_INFO_64) {
-        kern_return_t ret = %orig;
-        // Nếu region có tên path chứa dấu hiệu JB → giả vờ hết region
-        if (ret == KERN_SUCCESS && info) {
-            vm_region_basic_info_data_64_t *basic = (vm_region_basic_info_data_64_t *)info;
-            const char *name = (const char *)basic->offset;
-            // Không có tên path trong basic info, chỉ có offset
-            // → Không lọc được; trả về bình thường
-        }
-        return ret;
-    }
     return %orig;
 }
 
