@@ -221,3 +221,11 @@ extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
     return %orig;
 }
 %end
+%hookf(const char *, _dyld_get_image_name, uint32_t image_index) {
+    const char *real = %orig;
+    if (real && strstr(real, ".jbroot")) {
+        // Trả về đường dẫn giả trông giống hệ thống
+        return "/usr/lib/libSystem.B.dylib";
+    }
+    return real;
+}
