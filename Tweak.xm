@@ -1,4 +1,4 @@
-// Tweak.xm - Full Bypass v3
+// Tweak.xm - Full Bypass v4
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <Security/Security.h>
@@ -9,6 +9,9 @@
 #import <dlfcn.h>
 #import <dirent.h>
 #import <mach-o/dyld.h>
+#import <mach/mach.h>
+#import <mach/vm_region.h>
+#import <mach/vm_map.h>
 #import <string.h>
 
 // ==========================================
@@ -18,6 +21,21 @@ extern "C" int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersiz
 extern "C" int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
 extern "C" int proc_listpids(uint32_t type, uint32_t typeinfo, void *buffer, int buffersize);
 extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
+extern "C" kern_return_t mach_vm_region(
+    vm_map_t target_task,
+    mach_vm_address_t *address,
+    mach_vm_size_t *size,
+    vm_region_flavor_t flavor,
+    vm_region_info_t info,
+    mach_msg_type_number_t *infoCnt,
+    mach_port_t *object_name);
+extern "C" kern_return_t mach_vm_region_recurse(
+    vm_map_t target_task,
+    mach_vm_address_t *address,
+    mach_vm_size_t *size,
+    natural_t *nesting_depth,
+    vm_region_recurse_info_t info,
+    mach_msg_type_number_t *infoCnt);
 
 // ==========================================
 // CALLER CHECK
@@ -39,7 +57,7 @@ static bool isCallerRootHide() {
 }
 
 // ==========================================
-// DANH SÁCH PATH ĐÁNG NGỜ
+// PATH CHECK
 // ==========================================
 static bool isSuspiciousPath(const char *path) {
     if (!path) return false;
@@ -49,6 +67,8 @@ static bool isSuspiciousPath(const char *path) {
     if (strstr(path, "TweakInject")) return true;
     if (strstr(path, "DynamicPatches")) return true;
     if (strstr(path, "roothide")) return true;
+    if (strstr(path, "libinjector")) return true;
+    if (strstr(path, "systemhook")) return true;
     
     const char *jbApps[] = {
         "Cydia.app", "RST.app", "NZT.app", "Sileo.app", "Filza.app",
@@ -95,7 +115,8 @@ static bool isSuspiciousSymbol(const char *sym) {
     if (isCallerRootHide()) return false;
     const char *bad[] = {
         "jbroot", "MSHook", "substrate", "ellekit", "libhooker",
-        "roothide", "fishhook", "Frida", "Cydia", "TweakInject"
+        "roothide", "fishhook", "Frida", "Cydia", "TweakInject",
+        "libinjector", "systemhook"
     };
     for (size_t i = 0; i < sizeof(bad)/sizeof(bad[0]); i++) {
         if (strstr(sym, bad[i])) return true;
@@ -104,7 +125,7 @@ static bool isSuspiciousSymbol(const char *sym) {
 }
 
 // ==========================================
-// HELPER: kiểm tra tên dylib có phải JB không
+// DYLD NAME MAPPER (nhất quán index->path)
 // ==========================================
 static bool isJbImageName(const char *name) {
     if (!name) return false;
@@ -115,12 +136,14 @@ static bool isJbImageName(const char *name) {
            strstr(name, "Choicy")      != NULL ||
            strstr(name, "NSLogViewer") != NULL ||
            strstr(name, "LCProtectionBypass") != NULL ||
+           strstr(name, "AutoPickFoody") != NULL ||
            strstr(name, "AutoPatches") != NULL ||
            strstr(name, "libroot.dylib") != NULL ||
-           strstr(name, "systemhook")  != NULL;
+           strstr(name, "systemhook")  != NULL ||
+           strstr(name, "libinjector") != NULL;
 }
 
-// Bảng path hệ thống hợp lệ để trả về (unique cho mỗi JB dylib)
+// Bảng path hệ thống hợp lệ (unique)
 static const char *g_fakePaths[] = {
     "/usr/lib/libSystem.B.dylib",
     "/usr/lib/libobjc.A.dylib",
@@ -145,25 +168,18 @@ static const char *g_fakePaths[] = {
 };
 static const int g_fakePathCount = sizeof(g_fakePaths) / sizeof(g_fakePaths[0]);
 
-// Cache: index nào -> path giả nào (nhất quán giữa các lần gọi)
-static __thread uint32_t g_lastJbIndex = UINT32_MAX;
-static __thread const char *g_lastFakePath = NULL;
+// Map index -> fake path (nhất quán)
+static const char *fakeNameForIndex(uint32_t idx) {
+    return g_fakePaths[idx % g_fakePathCount];
+}
 
 // ==========================================
-// SECTION 1: DYLD - QUAN TRỌNG NHẤT
+// SECTION 1: DYLD
 // ==========================================
 %hookf(const char *, _dyld_get_image_name, uint32_t image_index) {
     const char *real = %orig;
     if (real && !isCallerRootHide() && isJbImageName(real)) {
-        // Nếu là cùng index gọi lại → trả về cùng path (nhất quán)
-        if (image_index == g_lastJbIndex && g_lastFakePath) {
-            return g_lastFakePath;
-        }
-        // Chọn path dựa trên index để tránh trùng lặp
-        const char *fake = g_fakePaths[image_index % g_fakePathCount];
-        g_lastJbIndex = image_index;
-        g_lastFakePath = fake;
-        return fake;
+        return fakeNameForIndex(image_index);
     }
     return real;
 }
@@ -181,7 +197,29 @@ static __thread const char *g_lastFakePath = NULL;
 }
 
 // ==========================================
-// SECTION 2: FILE SYSTEM
+// SECTION 2: DLADDR (fix mismatch với _dyld_get_image_name)
+// ==========================================
+%hookf(int, dladdr, const void *addr, Dl_info *info) {
+    int ret = %orig;
+    if (ret && info && info->dli_fname && !isCallerRootHide()) {
+        if (isJbImageName(info->dli_fname)) {
+            // Đổi tên hiển thị cho khớp với _dyld_get_image_name
+            // Tìm index của image này để trả về cùng fake path
+            uint32_t count = _dyld_image_count();
+            for (uint32_t i = 0; i < count; i++) {
+                const struct mach_header *hdr = _dyld_get_image_header(i);
+                if (hdr == (const struct mach_header *)info->dli_fbase) {
+                    info->dli_fname = fakeNameForIndex(i);
+                    break;
+                }
+            }
+        }
+    }
+    return ret;
+}
+
+// ==========================================
+// SECTION 3: FILE SYSTEM
 // ==========================================
 %hookf(int, stat, const char *path, struct stat *buf) {
     if (isSuspiciousPath(path)) return -1;
@@ -213,20 +251,19 @@ static __thread const char *g_lastFakePath = NULL;
 }
 
 // ==========================================
-// SECTION 3: DYLD LOADING + DLSYM
+// SECTION 4: DYLD LOADING + DLSYM
 // ==========================================
 %hookf(void *, dlopen, const char *path, int mode) {
     if (isSuspiciousPath(path)) return NULL;
     return %orig;
 }
-
 %hookf(void *, dlsym, void *handle, const char *symbol) {
     if (isSuspiciousSymbol(symbol)) return NULL;
     return %orig;
 }
 
 // ==========================================
-// SECTION 4: SYSCALL
+// SECTION 5: SYSCALL
 // ==========================================
 %hookf(int, sysctl, int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     if (namelen >= 2 && name[0] == CTL_KERN && name[1] == KERN_PROC) {
@@ -241,9 +278,8 @@ static __thread const char *g_lastFakePath = NULL;
 %hookf(int, sysctlbyname, const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     if (name && !isCallerRootHide()) {
         if (strstr(name, "kern.proc") ||
-            strstr(name, "kern.proc.all") ||
-            strstr(name, "security.mac") ||
-            strstr(name, "kern.argmax")) {
+            strstr(name, "kern.argmax") ||
+            strstr(name, "security.mac")) {
             if (oldlenp) *oldlenp = 0;
             return 0;
         }
@@ -257,27 +293,59 @@ static __thread const char *g_lastFakePath = NULL;
 }
 
 // ==========================================
-// SECTION 5: PROCESS ENUMERATION
+// SECTION 6: TASK_INFO (fix vector TASK_DYLD_INFO)
+// ==========================================
+%hookf(kern_return_t, task_info, task_name_t target_task, task_flavor_t flavor, task_info_t task_info_out, mach_msg_type_number_t *task_info_outCnt) {
+    if (!isCallerRootHide()) {
+        // TASK_DYLD_INFO = 17, TASK_DYLD_INFO_COUNT = 5
+        if (flavor == 17) {
+            // Trả về KERN_FAILURE để app không đọc được dyld info
+            return KERN_FAILURE;
+        }
+    }
+    return %orig;
+}
+
+// ==========================================
+// SECTION 7: MACH_VM_REGION (fix memory scan)
+// ==========================================
+%hookf(kern_return_t, mach_vm_region, vm_map_t target_task, mach_vm_address_t *address, mach_vm_size_t *size, vm_region_flavor_t flavor, vm_region_info_t info, mach_msg_type_number_t *infoCnt, mach_port_t *object_name) {
+    if (!isCallerRootHide() && flavor == VM_REGION_BASIC_INFO_64) {
+        kern_return_t ret = %orig;
+        // Nếu region có tên path chứa dấu hiệu JB → giả vờ hết region
+        if (ret == KERN_SUCCESS && info) {
+            vm_region_basic_info_data_64_t *basic = (vm_region_basic_info_data_64_t *)info;
+            const char *name = (const char *)basic->offset;
+            // Không có tên path trong basic info, chỉ có offset
+            // → Không lọc được; trả về bình thường
+        }
+        return ret;
+    }
+    return %orig;
+}
+
+%hookf(kern_return_t, mach_vm_region_recurse, vm_map_t target_task, mach_vm_address_t *address, mach_vm_size_t *size, natural_t *nesting_depth, vm_region_recurse_info_t info, mach_msg_type_number_t *infoCnt) {
+    return %orig;
+}
+
+// ==========================================
+// SECTION 8: PROCESS ENUM
 // ==========================================
 %hookf(int, proc_pidinfo, int pid, int flavor, uint64_t arg, void *buffer, int buffersize) {
     if (!isCallerRootHide()) {
-        // flavor 1 = PROC_PIDLISTFDS, 13 = PROC_PIDT_SHORTBSDINFO, 17 = various
         if (flavor == 1 || flavor == 13 || flavor == 17) {
             return 0;
         }
     }
     return %orig;
 }
-
 %hookf(int, proc_listpids, uint32_t type, uint32_t typeinfo, void *buffer, int buffersize) {
-    if (!isCallerRootHide()) {
-        return 0;
-    }
+    if (!isCallerRootHide()) return 0;
     return %orig;
 }
 
 // ==========================================
-// SECTION 6: ENV VARS
+// SECTION 9: ENV VARS
 // ==========================================
 %hookf(char *, getenv, const char *name) {
     if (name && !isCallerRootHide()) {
@@ -291,7 +359,7 @@ static __thread const char *g_lastFakePath = NULL;
 }
 
 // ==========================================
-// SECTION 7: OBJECTIVE-C
+// SECTION 10: OBJECTIVE-C
 // ==========================================
 %hook NSFileManager
 - (BOOL)fileExistsAtPath:(NSString *)path {
@@ -340,7 +408,7 @@ static __thread const char *g_lastFakePath = NULL;
 %end
 
 // ==========================================
-// SECTION 8: OBJC RUNTIME
+// SECTION 11: OBJC RUNTIME
 // ==========================================
 %hookf(Class, objc_getClass, const char *name) {
     if (name && !isCallerRootHide()) {
@@ -351,18 +419,15 @@ static __thread const char *g_lastFakePath = NULL;
     }
     return %orig;
 }
-
 %hookf(Class, objc_lookUpClass, const char *name) {
     if (name && !isCallerRootHide()) {
-        if (strstr(name, "Shadow") || strstr(name, "Choicy")) {
-            return nil;
-        }
+        if (strstr(name, "Shadow") || strstr(name, "Choicy")) return nil;
     }
     return %orig;
 }
 
 // ==========================================
-// SECTION 9: UIApplication URL schemes
+// SECTION 12: UIApplication URL schemes
 // ==========================================
 %hook UIApplication
 - (BOOL)canOpenURL:(NSURL *)url {
