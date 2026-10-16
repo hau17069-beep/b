@@ -1,4 +1,4 @@
-// Tweak.xm - Full Bypass v2
+// Tweak.xm - Full Bypass v3
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <Security/Security.h>
@@ -12,7 +12,7 @@
 #import <string.h>
 
 // ==========================================
-// EXTERN DECLARATIONS (các hàm private của Apple)
+// EXTERN DECLARATIONS
 // ==========================================
 extern "C" int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
 extern "C" int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
@@ -20,7 +20,7 @@ extern "C" int proc_listpids(uint32_t type, uint32_t typeinfo, void *buffer, int
 extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
 
 // ==========================================
-// CALLER CHECK: nếu là RootHide infra -> cho phép
+// CALLER CHECK
 // ==========================================
 static bool isCallerRootHide() {
     void *caller = __builtin_return_address(0);
@@ -39,7 +39,7 @@ static bool isCallerRootHide() {
 }
 
 // ==========================================
-// DANH SÁCH ĐEN: file & đường dẫn cần ẩn
+// DANH SÁCH PATH ĐÁNG NGỜ
 // ==========================================
 static bool isSuspiciousPath(const char *path) {
     if (!path) return false;
@@ -104,25 +104,72 @@ static bool isSuspiciousSymbol(const char *sym) {
 }
 
 // ==========================================
+// HELPER: kiểm tra tên dylib có phải JB không
+// ==========================================
+static bool isJbImageName(const char *name) {
+    if (!name) return false;
+    return strstr(name, ".jbroot")    != NULL ||
+           strstr(name, "TweakInject") != NULL ||
+           strstr(name, "roothide")    != NULL ||
+           strstr(name, "ellekit")     != NULL ||
+           strstr(name, "Choicy")      != NULL ||
+           strstr(name, "NSLogViewer") != NULL ||
+           strstr(name, "LCProtectionBypass") != NULL ||
+           strstr(name, "AutoPatches") != NULL ||
+           strstr(name, "libroot.dylib") != NULL ||
+           strstr(name, "systemhook")  != NULL;
+}
+
+// Bảng path hệ thống hợp lệ để trả về (unique cho mỗi JB dylib)
+static const char *g_fakePaths[] = {
+    "/usr/lib/libSystem.B.dylib",
+    "/usr/lib/libobjc.A.dylib",
+    "/usr/lib/system/libdispatch.dylib",
+    "/usr/lib/system/libsystem_kernel.dylib",
+    "/usr/lib/system/libsystem_pthread.dylib",
+    "/usr/lib/system/libsystem_c.dylib",
+    "/usr/lib/system/libsystem_malloc.dylib",
+    "/usr/lib/libc++.1.dylib",
+    "/usr/lib/libc++abi.dylib",
+    "/usr/lib/libnetwork.dylib",
+    "/usr/lib/libcompression.dylib",
+    "/usr/lib/libsqlite3.dylib",
+    "/usr/lib/libxml2.2.dylib",
+    "/usr/lib/libz.1.dylib",
+    "/usr/lib/libbz2.1.0.dylib",
+    "/usr/lib/libiconv.2.dylib",
+    "/usr/lib/libresolv.9.dylib",
+    "/usr/lib/libarchive.2.dylib",
+    "/usr/lib/libenergytrace.dylib",
+    "/usr/lib/libprotobuf.dylib"
+};
+static const int g_fakePathCount = sizeof(g_fakePaths) / sizeof(g_fakePaths[0]);
+
+// Cache: index nào -> path giả nào (nhất quán giữa các lần gọi)
+static __thread uint32_t g_lastJbIndex = UINT32_MAX;
+static __thread const char *g_lastFakePath = NULL;
+
+// ==========================================
 // SECTION 1: DYLD - QUAN TRỌNG NHẤT
 // ==========================================
 %hookf(const char *, _dyld_get_image_name, uint32_t image_index) {
     const char *real = %orig;
-    if (real && !isCallerRootHide()) {
-        if (strstr(real, ".jbroot") ||
-            strstr(real, "TweakInject") ||
-            strstr(real, "roothide") ||
-            strstr(real, "ellekit") ||
-            strstr(real, "Choicy") ||
-            strstr(real, "NSLogViewer") ||
-            strstr(real, "LCProtectionBypass") ||
-            strstr(real, "AutoPatches") ||
-            strstr(real, "libroot.dylib") ||
-            strstr(real, "systemhook")) {
-            return "/usr/lib/libSystem.B.dylib";
+    if (real && !isCallerRootHide() && isJbImageName(real)) {
+        // Nếu là cùng index gọi lại → trả về cùng path (nhất quán)
+        if (image_index == g_lastJbIndex && g_lastFakePath) {
+            return g_lastFakePath;
         }
+        // Chọn path dựa trên index để tránh trùng lặp
+        const char *fake = g_fakePaths[image_index % g_fakePathCount];
+        g_lastJbIndex = image_index;
+        g_lastFakePath = fake;
+        return fake;
     }
     return real;
+}
+
+%hookf(uint32_t, _dyld_image_count, void) {
+    return %orig;
 }
 
 %hookf(const struct mach_header *, _dyld_get_image_header, uint32_t image_index) {
@@ -130,10 +177,6 @@ static bool isSuspiciousSymbol(const char *sym) {
 }
 
 %hookf(intptr_t, _dyld_get_image_vmaddr_slide, uint32_t image_index) {
-    return %orig;
-}
-
-%hookf(uint32_t, _dyld_image_count, void) {
     return %orig;
 }
 
@@ -195,15 +238,60 @@ static bool isSuspiciousSymbol(const char *sym) {
     return %orig;
 }
 
+%hookf(int, sysctlbyname, const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    if (name && !isCallerRootHide()) {
+        if (strstr(name, "kern.proc") ||
+            strstr(name, "kern.proc.all") ||
+            strstr(name, "security.mac") ||
+            strstr(name, "kern.argmax")) {
+            if (oldlenp) *oldlenp = 0;
+            return 0;
+        }
+    }
+    return %orig;
+}
+
 %hookf(int, csops, pid_t pid, unsigned int ops, void *useraddr, size_t usersize) {
+    if (!isCallerRootHide()) return -1;
+    return %orig;
+}
+
+// ==========================================
+// SECTION 5: PROCESS ENUMERATION
+// ==========================================
+%hookf(int, proc_pidinfo, int pid, int flavor, uint64_t arg, void *buffer, int buffersize) {
     if (!isCallerRootHide()) {
-        return -1;
+        // flavor 1 = PROC_PIDLISTFDS, 13 = PROC_PIDT_SHORTBSDINFO, 17 = various
+        if (flavor == 1 || flavor == 13 || flavor == 17) {
+            return 0;
+        }
+    }
+    return %orig;
+}
+
+%hookf(int, proc_listpids, uint32_t type, uint32_t typeinfo, void *buffer, int buffersize) {
+    if (!isCallerRootHide()) {
+        return 0;
     }
     return %orig;
 }
 
 // ==========================================
-// SECTION 5: OBJECTIVE-C
+// SECTION 6: ENV VARS
+// ==========================================
+%hookf(char *, getenv, const char *name) {
+    if (name && !isCallerRootHide()) {
+        if (strstr(name, "DYLD_INSERT") ||
+            strstr(name, "DYLD_LIBRARY") ||
+            strstr(name, "DYLD_FRAMEWORK")) {
+            return NULL;
+        }
+    }
+    return %orig;
+}
+
+// ==========================================
+// SECTION 7: OBJECTIVE-C
 // ==========================================
 %hook NSFileManager
 - (BOOL)fileExistsAtPath:(NSString *)path {
@@ -252,7 +340,7 @@ static bool isSuspiciousSymbol(const char *sym) {
 %end
 
 // ==========================================
-// SECTION 6: OBJC RUNTIME
+// SECTION 8: OBJC RUNTIME
 // ==========================================
 %hookf(Class, objc_getClass, const char *name) {
     if (name && !isCallerRootHide()) {
@@ -274,7 +362,7 @@ static bool isSuspiciousSymbol(const char *sym) {
 }
 
 // ==========================================
-// SECTION 7: UIApplication URL schemes
+// SECTION 9: UIApplication URL schemes
 // ==========================================
 %hook UIApplication
 - (BOOL)canOpenURL:(NSURL *)url {
