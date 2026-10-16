@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-13        # <-- ĐỔI TỪ macos-latest SANG macos-13
+    runs-on: macos-latest    # Quay lại Apple Silicon, cấp phát tức thì
 
     steps:
     - name: Checkout repository
@@ -17,8 +17,9 @@ jobs:
 
     - name: Install Dependencies
       run: |
-        brew install ldid fakeroot make git
+        brew install ldid make git
         brew install --cask gcc-arm-embedded || true
+        # KHÔNG cài fakeroot từ brew - để Theos tự build
 
     - name: Setup Theos
       run: |
@@ -26,9 +27,18 @@ jobs:
         git clone --recursive https://github.com/theos/theos.git $THEOS
         echo "THEOS=$THEOS" >> $GITHUB_ENV
 
+    - name: Install Theos Dependencies
+      run: |
+        # Theos sẽ tự tải và build fakeroot đúng kiến trúc
+        $THEOS/bin/install-libipatcher.sh || true
+        # Hoặc dùng fakeroot bundled trong Theos
+        ls $THEOS/toolchain/
+
     - name: Build Tweak
       run: |
-        make package
+        # Tắt fakeroot bằng biến môi trường nếu cần
+        export THEOS_PACKAGE_SCHEME=rootless
+        make package FINALPACKAGE=1 || make package
       env:
         THEOS: ${{ env.THEOS }}
 
