@@ -1,0 +1,9 @@
+Package: com.yourname.lcprotectionrecon
+Name: LCProtection Recon
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Tweak do thám LCProtection của Foody
+Maintainer: YourName
+Author: YourName
+Section: Tweaks
+Depends: mobilesubstrate
