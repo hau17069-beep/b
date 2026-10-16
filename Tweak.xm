@@ -12,6 +12,14 @@
 #import <string.h>
 
 // ==========================================
+// EXTERN DECLARATIONS (các hàm private của Apple)
+// ==========================================
+extern "C" int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
+extern "C" int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
+extern "C" int proc_listpids(uint32_t type, uint32_t typeinfo, void *buffer, int buffersize);
+extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
+
+// ==========================================
 // CALLER CHECK: nếu là RootHide infra -> cho phép
 // ==========================================
 static bool isCallerRootHide() {
@@ -37,13 +45,11 @@ static bool isSuspiciousPath(const char *path) {
     if (!path) return false;
     if (isCallerRootHide()) return false;
     
-    // 1. Bất kỳ đường dẫn chứa .jbroot
     if (strstr(path, ".jbroot")) return true;
     if (strstr(path, "TweakInject")) return true;
     if (strstr(path, "DynamicPatches")) return true;
     if (strstr(path, "roothide")) return true;
     
-    // 2. JB apps cụ thể
     const char *jbApps[] = {
         "Cydia.app", "RST.app", "NZT.app", "Sileo.app", "Filza.app",
         "TouchSprite", "Flybird", "AWZ.app", "ALS.app", "AXJ.app",
@@ -54,7 +60,6 @@ static bool isSuspiciousPath(const char *path) {
         if (strstr(path, jbApps[i])) return true;
     }
     
-    // 3. Debug/Xcode tools
     const char *debugPaths[] = {
         "/Developer/usr/bin/DTDeviceArbitration",
         "/Developer/usr/bin/ScreenShotr",
@@ -66,17 +71,14 @@ static bool isSuspiciousPath(const char *path) {
         if (strstr(path, debugPaths[i])) return true;
     }
     
-    // 4. HeiBao/anti-cheat
     if (strstr(path, "heibao.service.plist")) return true;
     if (strstr(path, "zzzzHeiBaoLib")) return true;
     if (strstr(path, "HeiBaoService")) return true;
     
-    // 5. JB paths
     if (strcmp(path, "/var/jb") == 0) return true;
     if (strcmp(path, "/private/preboot/jb") == 0) return true;
     if (strstr(path, "/var/containers/Bundle/xina")) return true;
     
-    // 6. Classic JB files
     const char *classic[] = {
         "/bin/su", "/usr/sbin/sshd", "/usr/bin/ssh", "/etc/apt",
         "/usr/lib/libellekit", "libhooker", "/Library/MobileSubstrate"
@@ -117,7 +119,6 @@ static bool isSuspiciousSymbol(const char *sym) {
             strstr(real, "AutoPatches") ||
             strstr(real, "libroot.dylib") ||
             strstr(real, "systemhook")) {
-            // Trả về path hệ thống trông hợp lệ
             return "/usr/lib/libSystem.B.dylib";
         }
     }
@@ -196,7 +197,6 @@ static bool isSuspiciousSymbol(const char *sym) {
 
 %hookf(int, csops, pid_t pid, unsigned int ops, void *useraddr, size_t usersize) {
     if (!isCallerRootHide()) {
-        // Trả về lỗi để tránh check code signature flags
         return -1;
     }
     return %orig;
