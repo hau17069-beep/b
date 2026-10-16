@@ -2,10 +2,15 @@
 #import <Foundation/Foundation.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
-#import <sys/ptrace.h> // BẮT BUỘC: Thêm để fix lỗi 'ptrace'
-#import <unistd.h>     // BẮT BUỘC: Thêm để fix lỗi 'access'
+#import <unistd.h>
 #import <dlfcn.h>
 #import <UIKit/UIKit.h>
+
+// ==========================================
+// KHAI BÁO THỦ CÔNG HÀM PTRACE
+// (Vì iOS SDK không cung cấp header sys/ptrace.h)
+// ==========================================
+extern int ptrace(int request, pid_t pid, caddr_t addr, int data);
 
 // ==========================================
 // 1. HOOK CÁC HÀM C CẤP THẤP (File System)
@@ -23,8 +28,6 @@
     }
     return %orig;
 }
-
-// ĐÃ XÓA HOOK statfs Ở ĐÂY ĐỂ TRÁNH LỖI BUILD
 
 %hookf(int, access, const char *path, int mode) {
     if (path) {
@@ -59,7 +62,7 @@
 }
 
 %hookf(int, ptrace, int request, pid_t pid, caddr_t addr, int data) {
-    NSLog(@"[LC-RECON] ptrace called (Checking debugger)");
+    NSLog(@"[LC-RECON] ptrace called (request=%d) (Checking debugger)", request);
     return %orig;
 }
 
